@@ -388,7 +388,9 @@ class BertConfig(PretrainedConfig):
         use_cache=False,
         **kwargs
     ):
+        # print("kwargs::: ", kwargs)
         super().__init__(pad_token_id=pad_token_id, **kwargs)
+        # print("txr BertConfig xxx")
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers

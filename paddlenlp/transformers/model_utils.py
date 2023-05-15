@@ -1220,7 +1220,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         state_to_load = ft_decoding.get_ft_para_conf().fit_partial_model(model_to_load, state_dict)
         if paddle.in_dynamic_mode():
             model_to_load.set_state_dict(state_to_load)
-
+        # print("_load_pretrained_model __end__")
         return model_to_load, missing_keys, unexpected_keys, mismatched_keys
 
     @classmethod
@@ -1289,6 +1289,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         # 1. get the PretrainedConfig to init model
         if not isinstance(config, PretrainedConfig):
             config_path = config if config is not None else pretrained_model_name_or_path
+
             config, model_kwargs = cls.config_class.from_pretrained(
                 config_path,
                 cache_dir=cache_dir,
@@ -1297,13 +1298,11 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 from_hf_hub=from_hf_hub,
                 **kwargs,
             )
-
         if not os.path.exists(os.path.join(cache_dir, CONFIG_NAME)):
             config.save_pretrained(cache_dir)
 
         # 2. resolve model_weight file
         support_conversion = cls.support_conversion(config) and ENABLE_TORCH_CHECKPOINT
-
         model_weight_file = cls._resolve_model_file_path(
             pretrained_model_name_or_path,
             cache_dir=cache_dir,
@@ -1329,9 +1328,101 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             # 4. loading the state dict
             model_state_dict = paddle.load(model_weight_file, return_numpy=load_state_as_np)
 
+        # print("paddle.load == model_state_dict = ", model_state_dict)
         # 3. init the model
         init_args = config["init_args"] or ()
         model = cls(config, *init_args, **model_kwargs)
+        # for key, val in model_state_dict.items():
+        #     print(key, ":", type(val))
+        
+        # new_mode_states = model.state_dict()
+        # for key, val in new_mode_states.items():
+        #     print(key, ":", type(val))
+
+        def _ndarray_to_tensor(obj):
+            if paddle.in_dynamic_mode():
+                return paddle.to_tensor(obj)
+            else:
+                # return _to_LodTensor(obj)
+                if not isinstance(obj, np.ndarray):
+                    raise TypeError(
+                    'Type of `ndarray` should be numpy.ndarray, but received {}.'.
+                    format(type(obj)))
+                t = paddle.fluid.core.LoDTensor()
+                # place = paddle.fluid._current_expected_place()
+                t.set(obj, paddle.fluid.core.CPUPlace())
+                return t
+        
+        if config.fuse:
+            reset_state_dict = {}
+            # print("model_state_dict type = ", type(model_state_dict))
+            for key, val in model_state_dict.items():
+                # print(key, ":", type(val))
+                # print(val.place())
+                if not key.startswith("bert.encoder"):
+                    reset_state_dict[key] = val
+            head_dim = config.hidden_size // config.num_attention_heads
+            for layer_index in range(config.num_hidden_layers):
+                start_str = "bert.encoder.layers.{}".format(layer_index)
+                new_str = "bert.encoder.{}".format(layer_index)
+
+                # reset_state_dict["{}.fused_attn.q_proj.weight".format(new_str)] = model_state_dict["{}.self_attn.q_proj.weight".format(start_str)]
+                # reset_state_dict["{}.fused_attn.q_proj.bias".format(new_str)] = model_state_dict["{}.self_attn.q_proj.bias".format(start_str)]
+                # reset_state_dict["{}.fused_attn.k_proj.weight".format(new_str)] = model_state_dict["{}.self_attn.k_proj.weight".format(start_str)]
+                # reset_state_dict["{}.fused_attn.k_proj.bias".format(new_str)] = model_state_dict["{}.self_attn.k_proj.bias".format(start_str)]
+                # reset_state_dict["{}.fused_attn.v_proj.weight".format(new_str)] = model_state_dict["{}.self_attn.v_proj.weight".format(start_str)]
+                # reset_state_dict["{}.fused_attn.v_proj.bias".format(new_str)] = model_state_dict["{}.self_attn.v_proj.bias".format(start_str)]
+
+                # reset_state_dict["{}.fused_attn.out_proj.weight".format(new_str)] = model_state_dict["{}.self_attn.out_proj.weight".format(start_str)]
+                # reset_state_dict["{}.fused_attn.out_proj.bias".format(new_str)] = model_state_dict["{}.self_attn.out_proj.bias".format(start_str)]
+                # reset_state_dict["{}.fused_attn.norm.weight".format(new_str)] = model_state_dict["{}.norm1.weight".format(start_str)]
+                # reset_state_dict["{}.fused_attn.norm.bias".format(new_str)] = model_state_dict["{}.norm1.bias".format(start_str)]
+
+                #  attention
+                q_w = np.array(model_state_dict["{}.self_attn.q_proj.weight".format(start_str)])
+                k_w = np.array(model_state_dict["{}.self_attn.k_proj.weight".format(start_str)])
+                v_w = np.array(model_state_dict["{}.self_attn.v_proj.weight".format(start_str)])
+                q_proj_weight = q_w.transpose((1, 0))
+                k_proj_weight = k_w.transpose((1, 0))
+                v_proj_weight = v_w.transpose((1, 0))
+                qkv_weight = np.concatenate((q_proj_weight, k_proj_weight, v_proj_weight))
+                fused_qkv_val = qkv_weight.reshape((3, config.num_attention_heads, head_dim, config.hidden_size))
+                fused_qkv_weiht = _ndarray_to_tensor(fused_qkv_val)
+                reset_state_dict["{}.fused_attn.qkv_weight".format(new_str)] = fused_qkv_weiht
+
+                q_b = np.array(model_state_dict["{}.self_attn.q_proj.bias".format(start_str)])
+                k_b = np.array(model_state_dict["{}.self_attn.k_proj.bias".format(start_str)])
+                v_b = np.array(model_state_dict["{}.self_attn.v_proj.bias".format(start_str)])
+                qkv_b = np.concatenate((q_b, k_b, v_b)).reshape((3, config.num_attention_heads, head_dim))
+                fused_qkv_b = _ndarray_to_tensor(qkv_b)
+                reset_state_dict["{}.fused_attn.qkv_bias".format(new_str)] = fused_qkv_b
+
+                reset_state_dict["{}.fused_attn.linear_weight".format(new_str)] = model_state_dict["{}.self_attn.out_proj.weight".format(start_str)]
+                reset_state_dict["{}.fused_attn.linear_bias".format(new_str)] = model_state_dict["{}.self_attn.out_proj.bias".format(start_str)]
+
+                reset_state_dict["{}.fused_attn.ln_scale".format(new_str)] = model_state_dict["{}.norm1.weight".format(start_str)]
+                reset_state_dict["{}.fused_attn.ln_bias".format(new_str)] = model_state_dict["{}.norm1.bias".format(start_str)]
+
+                
+                # ffn
+                reset_state_dict["{}.ffn._linear1_weight".format(new_str)] = model_state_dict["{}.linear1.weight".format(start_str)]
+                reset_state_dict["{}.ffn._linear1_bias".format(new_str)] = model_state_dict["{}.linear1.bias".format(start_str)]
+
+                reset_state_dict["{}.ffn._linear2_weight".format(new_str)] = model_state_dict["{}.linear2.weight".format(start_str)]
+                reset_state_dict["{}.ffn._linear2_bias".format(new_str)] = model_state_dict["{}.linear2.bias".format(start_str)]
+
+                reset_state_dict["{}.ffn._ln2_scale".format(new_str)] = model_state_dict["{}.norm2.weight".format(start_str)]
+                reset_state_dict["{}.ffn._ln2_bias".format(new_str)] = model_state_dict["{}.norm2.bias".format(start_str)]
+
+                # reset_state_dict["{}.ffn.linear1.weight".format(new_str)] = model_state_dict["{}.linear1.weight".format(start_str)]
+                # reset_state_dict["{}.ffn.linear1.bias".format(new_str)] = model_state_dict["{}.linear1.bias".format(start_str)]
+                # reset_state_dict["{}.ffn.linear2.weight".format(new_str)] = model_state_dict["{}.linear2.weight".format(start_str)]
+                # reset_state_dict["{}.ffn.linear2.bias".format(new_str)] = model_state_dict["{}.linear2.bias".format(start_str)]
+                # reset_state_dict["{}.ffn.norm.weight".format(new_str)] = model_state_dict["{}.norm2.weight".format(start_str)]
+                # reset_state_dict["{}.ffn.norm.bias".format(new_str)] = model_state_dict["{}.norm2.bias".format(start_str)]
+
+            model_state_dict = reset_state_dict
+
 
         loaded_state_dict_keys = list(model_state_dict.keys())
         # TODO(wj-Mcat): load shard checkpoint weight file, refer to: https://github.com/huggingface/transformers/pull/16343

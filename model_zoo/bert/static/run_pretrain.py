@@ -329,7 +329,7 @@ def do_train(args):
         # Select one file for each worker and create the DataLoader for the file
         data_file = select_dataset_file_for_each_worker(files, f_start_id, worker_num, worker_index)
         train_data_loader, _ = create_pretraining_dataset(
-            data_file, args.max_predictions_per_seq, args, data_holders, worker_init, paddle.static.cuda_places()
+            data_file, args.max_predictions_per_seq, args, data_holders, worker_init, paddle.static.xpu_places()
         )
 
         for f_id in range(f_start_id + 1, len(files)):
@@ -341,7 +341,7 @@ def do_train(args):
                 args,
                 data_holders,
                 worker_init,
-                paddle.static.cuda_places(),
+                paddle.static.xpu_places(),
             )
 
             train_cost_avg = TimeCostAverage()

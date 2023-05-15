@@ -114,7 +114,7 @@ def load_from_hf(path, name=None, splits=None, **kwargs):
     from datasets import load_dataset as load_hf_dataset
     from datasets import DatasetDict
     from datasets.features import ClassLabel
-
+    print("load_from_hf === ")
     try:
         hf_datasets = load_hf_dataset(path, name=name, split=splits, **kwargs)
     except FileNotFoundError:
@@ -176,6 +176,7 @@ def load_dataset(path_or_read_func, name=None, data_files=None, splits=None, laz
     <https://paddlenlp.readthedocs.io/zh/latest/data_prepare/dataset_self_defined.html>`__
 
     """
+    print("load_dataset === ")
     if inspect.isfunction(path_or_read_func):
         assert lazy is not None, "lazy can not be None in custom mode."
         kwargs["name"] = name
@@ -191,6 +192,7 @@ def load_dataset(path_or_read_func, name=None, data_files=None, splits=None, laz
     else:
         try:
             reader_cls = import_main_class(path_or_read_func)
+            print("reader_cls = ", reader_cls)
         except ModuleNotFoundError:
             datasets = load_from_hf(path_or_read_func, name=name, splits=splits, **kwargs)
         else:
@@ -218,8 +220,9 @@ def load_dataset(path_or_read_func, name=None, data_files=None, splits=None, laz
             for split_name in selected_splits:
                 if split_name not in split_names and split_name != None:
                     raise ValueError('Invalid split "{}". Should be one of {}.'.format(split_name, list(split_names)))
-
+            print("reader_instance = ", reader_instance)
             datasets = reader_instance.read_datasets(data_files=data_files, splits=splits)
+            print("datasets = ", datasets)
         return datasets
 
 

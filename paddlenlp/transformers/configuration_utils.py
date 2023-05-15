@@ -731,8 +731,9 @@ class PretrainedConfig:
         ```"""
         kwargs.update({"from_hf_hub": from_hf_hub, "cache_dir": cache_dir})
 
+        # print("cls.get_config_dict : ", kwargs)
         config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
-
+        # print("cls.config_dict : ",config_dict)
         return cls.from_dict(config_dict, **kwargs)
 
     @classmethod
@@ -890,6 +891,7 @@ class PretrainedConfig:
             kwargs.pop(key, None)
 
         logger.info(f"Model config {config}")
+        # print("txr model")
         if return_unused_kwargs:
             return config, kwargs
         else:

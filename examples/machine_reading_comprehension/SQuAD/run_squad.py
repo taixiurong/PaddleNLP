@@ -38,6 +38,7 @@ from paddlenlp.transformers import (
 from paddlenlp.transformers import LinearDecayWithWarmup
 from paddlenlp.metrics.squad import squad_evaluate, compute_prediction
 from datasets import load_dataset
+import datasets as huggingface_datasets
 
 MODEL_CLASSES = {
     "bert": (BertForQuestionAnswering, BertTokenizer),
@@ -225,33 +226,85 @@ def run(args):
     paddle.set_device(args.device)
     if paddle.distributed.get_world_size() > 1:
         paddle.distributed.init_parallel_env()
+    
     rank = paddle.distributed.get_rank()
     args.model_type = args.model_type.lower()
     model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path)
 
+    # if args.version_2_with_negative:
+    #     train_ds = huggingface_datasets.Dataset.load_from_disk("squad_v2_train")
+    #     # dev_ds = huggingface_datasets.Dataset.load_from_disk("squad_v2_validation")
+    # else:
+    #    train_ds = huggingface_datasets.Dataset.load_from_disk("squad_v1_train")
+    # #    dev_ds = huggingface_datasets.Dataset.load_from_disk("squad_v1_validation")        
+
+    # huggingface_datasets.Dataset.load_from_disk("squad_train_v1.0")
+    # dataset.save_to_disk("squad_train_v1.0")
     if args.version_2_with_negative:
         train_examples = load_dataset("squad_v2", split="train")
         dev_examples = load_dataset("squad_v2", split="validation")
     else:
         train_examples = load_dataset("squad", split="train")
         dev_examples = load_dataset("squad", split="validation")
+
+    # 保存数据
+    # train_examples = load_dataset("squad_v2", split="train")
+    # column_names = train_examples.column_names
+    # train_ds = train_examples.map(
+    #         partial(prepare_train_features, tokenizer=tokenizer, args=args),
+    #         batched=True,
+    #         remove_columns=column_names,
+    #         num_proc=16,
+    # )
+    # train_ds.save_to_disk("squad_v2_train")
+
+    # dev_examples = load_dataset("squad_v2", split="validation")
+    # dev_ds = dev_examples.map(
+    #         partial(prepare_validation_features, tokenizer=tokenizer, args=args),
+    #         batched=True,
+    #         remove_columns=column_names,
+    #         num_proc=16,
+    # )
+    # dev_ds.save_to_disk("squad_v2_validation")
+
+    # train_examples = load_dataset("squad", split="train")
+    # column_names = train_examples.column_names
+    # train_ds = train_examples.map(
+    #         partial(prepare_train_features, tokenizer=tokenizer, args=args),
+    #         batched=True,
+    #         remove_columns=column_names,
+    #         num_proc=16,
+    # )
+    # train_ds.save_to_disk("squad_v1_train")
+
+    # dev_examples = load_dataset("squad", split="validation")
+    # dev_ds = dev_examples.map(
+    #         partial(prepare_validation_features, tokenizer=tokenizer, args=args),
+    #         batched=True,
+    #         remove_columns=column_names,
+    #         num_proc=16,
+    # )
+    # dev_ds.save_to_disk("squad_v1_validation")
+
+    # exit()
+
     set_seed(args)
     if rank == 0:
         if os.path.exists(args.model_name_or_path):
             print("init checkpoint from %s" % args.model_name_or_path)
-
-    model = model_class.from_pretrained(args.model_name_or_path)
+    kwargs={"fuse": args.fuse_transformer}
+    model = model_class.from_pretrained(args.model_name_or_path, **kwargs)
     column_names = train_examples.column_names
     if paddle.distributed.get_world_size() > 1:
         model = paddle.DataParallel(model)
-
+    
     if args.do_train:
         train_ds = train_examples.map(
             partial(prepare_train_features, tokenizer=tokenizer, args=args),
             batched=True,
             remove_columns=column_names,
-            num_proc=4,
+            num_proc=32,
         )
         train_batch_sampler = paddle.io.DistributedBatchSampler(train_ds, batch_size=args.batch_size, shuffle=True)
         train_batchify_fn = DataCollatorWithPadding(tokenizer)
@@ -275,9 +328,13 @@ def run(args):
             weight_decay=args.weight_decay,
             apply_decay_param_fun=lambda x: x in decay_params,
         )
+
         criterion = CrossEntropyLossForSQuAD()
 
+        # print(model)
+
         if args.use_amp:
+            # model = paddle.amp.decorate(models=model, level='O2')
             scaler = paddle.amp.GradScaler(init_loss_scaling=args.scale_loss)
 
         global_step = 0
@@ -287,7 +344,14 @@ def run(args):
             for step, batch in enumerate(train_data_loader):
                 global_step += 1
                 if args.use_amp:
-                    with paddle.amp.auto_cast(args.use_amp, custom_white_list=["layer_norm", "softmax", "gelu"]):
+                    with paddle.amp.auto_cast(args.use_amp, custom_white_list=["layer_norm", "dropout", "gelu", "embedding",
+                                                                               "fused_attention", 
+                                                                               "fused_feedforward",
+                                                                               "matmul_v2",
+                                                                               "matmul",
+                                                                               "softmax_with_cross_entropy",
+                                                                               "cross_entropy"]): 
+                    # with paddle.amp.auto_cast(level='O2'):
                         logits = model(
                             input_ids=batch["input_ids"],
                             token_type_ids=batch["token_type_ids"],
@@ -325,15 +389,21 @@ def run(args):
                         model_to_save.save_pretrained(output_dir)
                         tokenizer.save_pretrained(output_dir)
                         print("Saving checkpoint to:", output_dir)
-                    if global_step == num_training_steps:
+                if global_step == num_training_steps:
                         break
 
     if args.do_predict and rank == 0:
+        # if args.version_2_with_negative:
+        #     dev_examples = load_dataset("squad_v2", split="validation")
+        #     dev_ds = huggingface_datasets.Dataset.load_from_disk("squad_v2_validation")
+        # else:
+        #     dev_examples = load_dataset("squad", split="validation")
+        #     dev_ds = huggingface_datasets.Dataset.load_from_disk("squad_v1_validation")
         dev_ds = dev_examples.map(
             partial(prepare_validation_features, tokenizer=tokenizer, args=args),
             batched=True,
             remove_columns=column_names,
-            num_proc=4,
+            num_proc=16,
         )
         dev_batch_sampler = paddle.io.BatchSampler(dev_ds, batch_size=args.batch_size, shuffle=False)
         dev_ds_for_model = dev_ds.remove_columns(["example_id", "offset_mapping"])

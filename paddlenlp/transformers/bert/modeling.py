@@ -150,6 +150,7 @@ class BertPretrainedModel(PretrainedModel):
 
     @classmethod
     def _get_name_mappings(cls, config: BertConfig) -> list[StateDictNameMapping]:
+        
         mappings: list[StateDictNameMapping] = []
         model_mappings = [
             ["embeddings.word_embeddings.weight", "embeddings.word_embeddings.weight"],
@@ -161,6 +162,7 @@ class BertPretrainedModel(PretrainedModel):
             ["pooler.dense.bias", "pooler.dense.bias"],
             # for TokenClassification
         ]
+        
         for layer_index in range(config.num_hidden_layers):
             layer_mappings = [
                 [
@@ -222,6 +224,7 @@ class BertPretrainedModel(PretrainedModel):
                 [f"encoder.layer.{layer_index}.output.LayerNorm.weight", f"encoder.layers.{layer_index}.norm2.weight"],
                 [f"encoder.layer.{layer_index}.output.LayerNorm.bias", f"encoder.layers.{layer_index}.norm2.bias"],
             ]
+            
             model_mappings.extend(layer_mappings)
 
         # base-model prefix "BertModel"
@@ -233,12 +236,14 @@ class BertPretrainedModel(PretrainedModel):
         # downstream mappings
         if "BertForQuestionAnswering" in config.architectures:
             model_mappings.extend([["qa_outputs.weight", "classifier.weight"], ["qa_outputs.bias", "classifier.bias"]])
-
+        
         mappings = [StateDictNameMapping(*mapping, index=index) for index, mapping in enumerate(model_mappings)]
+        
         return mappings
 
     def init_weights(self, layer):
         """Initialization hook"""
+        # print("init_weights == ")
         if isinstance(layer, (nn.Linear, nn.Embedding)):
             # In the dygraph mode, use the `set_value` to reset the parameter directly,
             # and reset the `state_dict` to update parameter in static mode.
@@ -623,8 +628,10 @@ class BertForSequenceClassification(BertPretrainedModel):
     """
 
     def __init__(self, config: BertConfig):
+        print("begin __init__")
         super(BertForSequenceClassification, self).__init__(config)
-
+        print("BertForSequenceClassification __init__")
+        print("config: ", config)
         self.bert = BertModel(config)
         self.num_labels = config.num_labels
         self.dropout = nn.Dropout(
